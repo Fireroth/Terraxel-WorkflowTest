@@ -5,13 +5,24 @@
 
 // Helper function to get biome based on noise value
 Chunk::Biome getBiome(float b) {
-    if (b >= -1.0f && b < -0.3333f)
-        return Chunk::Biome::Forest;
-    else if (b >= -0.3333f && b < 0.25f)
-        return Chunk::Biome::Plains;
-    else
-        return Chunk::Biome::Desert;
+    static const std::vector<Chunk::Biome> biomes = {
+        Chunk::Biome::Forest,
+        Chunk::Biome::Plains,
+        Chunk::Biome::FirForest,
+        Chunk::Biome::FlowerField,
+        Chunk::Biome::MapleForest,
+        Chunk::Biome::Desert
+    };
+
+    float normalized = (b + 1.0f) / 2.0f;
+    int index = static_cast<int>(normalized * static_cast<float>(biomes.size()));
+
+    if (index >= static_cast<int>(biomes.size()))
+        index = static_cast<int>(biomes.size() - 1);
+
+    return biomes[index];
 }
+
 
 // Helper function to get biome parameters
 void getBiomeParams(Chunk::Biome biome, float& heightScale, float& detailWeight, float& power, float& baseHeight) {
@@ -34,47 +45,64 @@ void getBiomeParams(Chunk::Biome biome, float& heightScale, float& detailWeight,
             power = 1.3f;
             baseHeight = 30.0f;
             break;
+        case Chunk::Biome::FirForest:
+            heightScale = 0.9f;
+            detailWeight = 0.4f;
+            power = 1.0f;
+            baseHeight = 30.0f;
+            break;
+        case Chunk::Biome::FlowerField:
+            heightScale = 0.7f;
+            detailWeight = 0.1f;
+            power = 1.0f;
+            baseHeight = 29.0f;
+            break;
+        case Chunk::Biome::MapleForest:
+            heightScale = 1.0f;
+            detailWeight = 0.4f;
+            power = 1.3f;
+            baseHeight = 30.0f;
+            break;
     }
 }
 
 void generateChunkTerrain(Chunk& chunk) {
-    const int WIDTH = Chunk::WIDTH;
-    const int HEIGHT = Chunk::HEIGHT;
-    const int DEPTH = Chunk::DEPTH;
+    const int transitionRadius = 5; // blend over 5 blocks (from each side)
+    const float biomeDistortStrength = 8.0f;
+
+    const int chunkWidth = Chunk::chunkWidth;
+    const int chunkHeight = Chunk::chunkHeight;
+    const int chunkDepth = Chunk::chunkDepth;
     auto& noises = chunk.noises;
     int chunkX = chunk.chunkX;
     int chunkZ = chunk.chunkZ;
-    const int transitionRadius = 5; // blend over 5 blocks
-
-    // Distortion strength for biome edges
-    const float biomeDistortStrength = 8.0f;
-
+    
     // Get the "main" biome for this chunk for feature generation
     float b = noises.biomeNoise.GetNoise(
-        (float)(chunkX * WIDTH) + noises.biomeDistortNoise.GetNoise((float)(chunkX * WIDTH), (float)(chunkZ * DEPTH)) * biomeDistortStrength,
-        (float)(chunkZ * DEPTH) + noises.biomeDistortNoise.GetNoise((float)(chunkX * WIDTH) + 1000.0f, (float)(chunkZ * DEPTH) + 1000.0f) * biomeDistortStrength
+        (float)(chunkX * chunkWidth) + noises.biomeDistortNoise.GetNoise((float)(chunkX * chunkWidth), (float)(chunkZ * chunkDepth)) * biomeDistortStrength,
+        (float)(chunkZ * chunkDepth) + noises.biomeDistortNoise.GetNoise((float)(chunkX * chunkWidth) + 1000.0f, (float)(chunkZ * chunkDepth) + 1000.0f) * biomeDistortStrength
     );
     Chunk::Biome biome = getBiome(b);
 
-    // Precompute biome and height values for the blending to avoid redundant noise calls
-    std::vector<std::vector<Chunk::Biome>> biomeCache(WIDTH + 2 * transitionRadius, std::vector<Chunk::Biome>(DEPTH + 2 * transitionRadius));
-    std::vector<std::vector<float>> heightCache(WIDTH + 2 * transitionRadius, std::vector<float>(DEPTH + 2 * transitionRadius));
+    // Precompute biome and height values for the blending
+    std::vector<std::vector<Chunk::Biome>> biomeCache(chunkWidth + 2 * transitionRadius, std::vector<Chunk::Biome>(chunkDepth + 2 * transitionRadius));
+    std::vector<std::vector<float>> heightCache(chunkWidth + 2 * transitionRadius, std::vector<float>(chunkDepth + 2 * transitionRadius));
 
-    for (int dx = -transitionRadius; dx < WIDTH + transitionRadius; ++dx) {
-        for (int dz = -transitionRadius; dz < DEPTH + transitionRadius; ++dz) {
-            int wx = chunkX * WIDTH + dx;
-            int wz = chunkZ * DEPTH + dz;
+    for (int localOffsetX = -transitionRadius; localOffsetX < chunkWidth + transitionRadius; localOffsetX++) {
+        for (int localOffsetZ = -transitionRadius; localOffsetZ < chunkDepth + transitionRadius; localOffsetZ++) {
+            int worldX = chunkX * chunkWidth + localOffsetX;
+            int worldZ = chunkZ * chunkDepth + localOffsetZ;
 
             // Distort biome noise coordinates
-            float distortX = noises.biomeDistortNoise.GetNoise((float)wx, (float)wz) * biomeDistortStrength;
-            float distortY = noises.biomeDistortNoise.GetNoise((float)wx + 1000.0f, (float)wz + 1000.0f) * biomeDistortStrength;
-            float biomeNoise = noises.biomeNoise.GetNoise((float)wx + distortX, (float)wz + distortY);
+            float distortX = noises.biomeDistortNoise.GetNoise((float)worldX, (float)worldZ) * biomeDistortStrength;
+            float distortY = noises.biomeDistortNoise.GetNoise((float)worldX + 1000.0f, (float)worldZ + 1000.0f) * biomeDistortStrength;
+            float biomeNoise = noises.biomeNoise.GetNoise((float)worldX + distortX, (float)worldZ + distortY);
             Chunk::Biome biome = getBiome(biomeNoise);
-            biomeCache[dx + transitionRadius][dz + transitionRadius] = biome;
+            biomeCache[localOffsetX + transitionRadius][localOffsetZ + transitionRadius] = biome;
 
-            float base = noises.baseNoise.GetNoise((float)wx, (float)wz) * 0.5f + 0.5f;
-            float detail = noises.detailNoise.GetNoise((float)wx, (float)wz) * 0.5f + 0.5f;
-            float detail2 = noises.detail2Noise.GetNoise((float)wx, (float)wz) * 0.5f + 0.5f;
+            float base = noises.baseNoise.GetNoise((float)worldX, (float)worldZ) * 0.5f + 0.5f;
+            float detail = noises.detailNoise.GetNoise((float)worldX, (float)worldZ) * 0.5f + 0.5f;
+            float detail2 = noises.detail2Noise.GetNoise((float)worldX, (float)worldZ) * 0.5f + 0.5f;
 
             float heightScale = 1.0f;
             float detailWeight = 1.0f;
@@ -84,29 +112,33 @@ void generateChunkTerrain(Chunk& chunk) {
 
             float combined = base + detail * detailWeight + detail2 * 0.2f;
             combined = std::pow(combined, power);
+
             float height = combined * 24.0f * heightScale + baseHeight;
-            heightCache[dx + transitionRadius][dz + transitionRadius] = height;
+            if (height < 37.0f) // Deeper lakes
+                height = height - ((37.0f - height) / 2.0f);
+
+            heightCache[localOffsetX + transitionRadius][localOffsetZ + transitionRadius] = height;
         }
     }
 
-    for (int x = 0; x < WIDTH; ++x) {
-        for (int z = 0; z < DEPTH; ++z) {
-            int wx = chunkX * WIDTH + x;
-            int wz = chunkZ * DEPTH + z;
+    for (int x = 0; x < chunkWidth; x++) {
+        for (int z = 0; z < chunkDepth; z++) {
+            int worldX = chunkX * chunkWidth + x;
+            int worldZ = chunkZ * chunkDepth + z;
 
             // Distort biome noise coordinates for this column
-            float distortX = noises.biomeDistortNoise.GetNoise((float)wx, (float)wz) * biomeDistortStrength;
-            float distortY = noises.biomeDistortNoise.GetNoise((float)wx + 1000.0f, (float)wz + 1000.0f) * biomeDistortStrength;
-            float centerBiomeNoise = noises.biomeNoise.GetNoise((float)wx + distortX, (float)wz + distortY);
+            float distortX = noises.biomeDistortNoise.GetNoise((float)worldX, (float)worldZ) * biomeDistortStrength;
+            float distortY = noises.biomeDistortNoise.GetNoise((float)worldX + 1000.0f, (float)worldZ + 1000.0f) * biomeDistortStrength;
+            float centerBiomeNoise = noises.biomeNoise.GetNoise((float)worldX + distortX, (float)worldZ + distortY);
             Chunk::Biome centerBiome = getBiome(centerBiomeNoise);
 
             float centerHeight = heightCache[x + transitionRadius][z + transitionRadius];
 
             // Blending
             bool hasDifferentBiome = false;
-            for (int dx = -transitionRadius; dx <= transitionRadius && !hasDifferentBiome; ++dx) {
-                for (int dz = -transitionRadius; dz <= transitionRadius && !hasDifferentBiome; ++dz) {
-                    Chunk::Biome nBiome = biomeCache[x + dx + transitionRadius][z + dz + transitionRadius];
+            for (int localOffsetX = -transitionRadius; localOffsetX <= transitionRadius && !hasDifferentBiome; localOffsetX++) {
+                for (int localOffsetZ = -transitionRadius; localOffsetZ <= transitionRadius && !hasDifferentBiome; localOffsetZ++) {
+                    Chunk::Biome nBiome = biomeCache[x + localOffsetX + transitionRadius][z + localOffsetZ + transitionRadius];
                     if (nBiome != centerBiome) {
                         hasDifferentBiome = true;
                     }
@@ -120,13 +152,13 @@ void generateChunkTerrain(Chunk& chunk) {
                 float totalWeight = 0.0f;
                 std::map<Chunk::Biome, float> biomeWeights;
 
-                for (int dx = -transitionRadius; dx <= transitionRadius; ++dx) {
-                    for (int dz = -transitionRadius; dz <= transitionRadius; ++dz) {
-                        float dist2 = static_cast<float>(dx * dx + dz * dz);
+                for (int localOffsetX = -transitionRadius; localOffsetX <= transitionRadius; localOffsetX++) {
+                    for (int localOffsetZ = -transitionRadius; localOffsetZ <= transitionRadius; localOffsetZ++) {
+                        float dist2 = static_cast<float>(localOffsetX * localOffsetX + localOffsetZ * localOffsetZ);
                         float weight = 1.0f / (dist2 + 1.0f);
 
-                        Chunk::Biome nBiome = biomeCache[x + dx + transitionRadius][z + dz + transitionRadius];
-                        float nHeight = heightCache[x + dx + transitionRadius][z + dz + transitionRadius];
+                        Chunk::Biome nBiome = biomeCache[x + localOffsetX + transitionRadius][z + localOffsetZ + transitionRadius];
+                        float nHeight = heightCache[x + localOffsetX + transitionRadius][z + localOffsetZ + transitionRadius];
 
                         biomeWeights[nBiome] += weight;
                         blendedHeight += nHeight * weight;
@@ -151,7 +183,7 @@ void generateChunkTerrain(Chunk& chunk) {
 
             int height = static_cast<int>(blendedHeight);
 
-            for (int y = 0; y < HEIGHT; ++y) {
+            for (int y = 0; y < chunkHeight; y++) {
                 if (y == 0) {
                     chunk.blocks[x][y][z].type = 6; // Bedrock
                 } else if (y > height) {
@@ -161,16 +193,25 @@ void generateChunkTerrain(Chunk& chunk) {
                     switch (finalBiome) {
                         case Chunk::Biome::Plains:
                         case Chunk::Biome::Forest:
-                            chunk.blocks[x][y][z].type = 1; // Grass
+                        case Chunk::Biome::FlowerField:
+                        case Chunk::Biome::MapleForest:
+                            // If grass would be generated below y 36, use sand instead
+                            chunk.blocks[x][y][z].type = (y < 36) ? 4 : 1; // Sand or Grass Block
+                            break;
+                        case Chunk::Biome::FirForest:
+                            chunk.blocks[x][y][z].type = (y < 36) ? 4 : 23; // Sand or Dark Grass Block
                             break;
                         case Chunk::Biome::Desert:
                             chunk.blocks[x][y][z].type = 4; // Sand
                             break;
                     }
-                } else if (y >= height - 2) {
+                } else if (y >= height - 3) {
                     switch (finalBiome) {
                         case Chunk::Biome::Plains:
                         case Chunk::Biome::Forest:
+                        case Chunk::Biome::FirForest:
+                        case Chunk::Biome::FlowerField:
+                        case Chunk::Biome::MapleForest:
                             chunk.blocks[x][y][z].type = 2; // Dirt
                             break;
                         case Chunk::Biome::Desert:
@@ -181,6 +222,9 @@ void generateChunkTerrain(Chunk& chunk) {
                     switch (finalBiome) {
                         case Chunk::Biome::Plains:
                         case Chunk::Biome::Forest:
+                        case Chunk::Biome::FirForest:
+                        case Chunk::Biome::FlowerField:
+                        case Chunk::Biome::MapleForest:
                             chunk.blocks[x][y][z].type = 3; // Stone
                             break;
                         case Chunk::Biome::Desert:
@@ -198,33 +242,158 @@ void generateChunkTerrain(Chunk& chunk) {
     chunk.biome = biome;
     switch (biome) {
         case Chunk::Biome::Plains:
-            //generateChunkBiomeFeatures(chunk, 0, 0.9999f, 19, 19, "big_test", 1);
-            generateChunkBiomeFeatures(chunk, 0, 0.998f, 2, 2, "tree", 1);
+            //(chunk, treshold, xOffset, zOffset, structureName/blockID, allowedBlockID, seedOffset, yOffset)
+            generateChunkBiomeFeatures(chunk, 0.9997f, 4, 3, "puddle", 1, 0, -4);
+            generateChunkBiomeFeatures(chunk, 0.998f, 2, 2, "tree", 1, 1, 0);
+            generateChunkBiomeBlocks(chunk, 0.83f, 17, 1, 2, 0); // Grass
+            generateChunkBiomeBlocks(chunk, 0.80f, 18, 1, 3, 0); // Grass Short
+            generateChunkBiomeBlocks(chunk, 0.96f, 20, 1, 4, 0); // Poppy
+            generateChunkBiomeBlocks(chunk, 0.96f, 21, 1, 5, 0); // Dandelion
             break;
         case Chunk::Biome::Forest:
-            generateChunkBiomeFeatures(chunk, 0, 0.93f, 2, 2, "tree", 1);
+            generateChunkBiomeFeatures(chunk, 0.93f, 2, 2, "tree", 1, 0, 0);
+            generateChunkBiomeBlocks(chunk, 0.93f, 17, 1, 1, 0); // Grass
+            generateChunkBiomeBlocks(chunk, 0.93f, 18, 1, 2, 0); // Grass Short
+            generateChunkBiomeBlocks(chunk, 0.92f, 41, 1, 3, 0); // Leaves Carpet
+            generateChunkBiomeBlocks(chunk, 0.997f, 60, 1, 4, 0); // Brown Mushroom
+            generateChunkBiomeBlocks(chunk, 0.997f, 61, 1, 5, 0); // Red Mushroom
             break;
         case Chunk::Biome::Desert:
-            generateChunkBiomeFeatures(chunk, 0, 0.97f, 0, 0, "cactus", 4);
+            generateChunkBiomeFeatures(chunk, 0.997f, 0, 0, "cactus2", 4, 0, 0);
+            generateChunkBiomeFeatures(chunk, 0.997f, 0, 0, "cactus", 4, 1, 0);
+            generateChunkBiomeBlocks(chunk, 0.985f, 19, 4, 2, 0); // Dead Bush
+            generateChunkBiomeFeatures(chunk, 0.99999f, 8, 8, "pyramid", 4, 3, -1);
+            generateChunkBiomeFeatures(chunk, 0.998f, 0, 0, "flowerCactus", 4, 4, 0);
+            generateChunkBiomeBlocks(chunk, 0.985f, 59, 4, 5, 0); // Dead Grass
+            break;
+        case Chunk::Biome::FirForest:
+            generateChunkBiomeFeatures(chunk, 0.985f, 4, 4, "firTree", 23, 0, 0);
+            generateChunkBiomeFeatures(chunk, 0.99f, 4, 4, "smallFirTree", 23, 1, 0);
+            generateChunkBiomeBlocks(chunk, 0.80f, 24, 23, 2, 0); // Dark Grass
+            generateChunkBiomeBlocks(chunk, 0.88f, 26, 23, 3, 0); // Dark Grass Short
+            generateChunkBiomeBlocks(chunk, 0.93f, 25, 23, 4, 0); // Pebble
+            generateChunkBiomeBlocks(chunk, 0.98f, 56, 9, 5, 0); // Lily Pad
+            generateChunkBiomeBlocks(chunk, 0.98f, 60, 23, 6, 0); // Brown Mushroom
+            generateChunkBiomeBlocks(chunk, 0.98f, 61, 23, 7, 0); // Red Mushroom
+            generateChunkBiomeFeatures(chunk, 0.998f, 2, 2, "rock", 23, 8, -1);
+            break;
+        case Chunk::Biome::FlowerField:
+            generateChunkBiomeBlocks(chunk, 0.97f, 34, 1, 0, 0); // Lavender
+            generateChunkBiomeBlocks(chunk, 0.97f, 33, 1, 1, 0); // Crocus
+            generateChunkBiomeBlocks(chunk, 0.97f, 30, 1, 2, 0); // Bistort
+            generateChunkBiomeBlocks(chunk, 0.97f, 29, 1, 3, 0); // Pink Anemone
+            generateChunkBiomeBlocks(chunk, 0.97f, 28, 1, 4, 0); // Blue Sage
+            generateChunkBiomeBlocks(chunk, 0.97f, 20, 1, 5, 0); // Poppy
+            generateChunkBiomeBlocks(chunk, 0.97f, 21, 1, 6, 0); // Dandelion
+            generateChunkBiomeBlocks(chunk, 0.97f, 17, 1, 7, 0); // Grass
+            generateChunkBiomeBlocks(chunk, 0.97f, 18, 1, 8, 0); // Grass Short
+            generateChunkBiomeFeatures(chunk, 0.97f, 1, 1, "tinyTree", 1, 9, 0);
+            generateChunkBiomeBlocks(chunk, 0.97f, 55, 1, 10, 0); // Red Rose
+            break;
+        case Chunk::Biome::MapleForest:
+            generateChunkBiomeFeatures(chunk, 0.986f, 2, 2, "redMaple", 1, 0, 0);
+            generateChunkBiomeFeatures(chunk, 0.986f, 2, 2, "orangeMaple", 1, 1, 0);
+            generateChunkBiomeFeatures(chunk, 0.986f, 2, 2, "yellowMaple", 1, 2, 0);
+            generateChunkBiomeBlocks(chunk, 0.90f, 17, 1, 3, 0); // Grass
+            generateChunkBiomeBlocks(chunk, 0.90f, 18, 1, 4, 0); // Grass Short
+            generateChunkBiomeBlocks(chunk, 0.96f, 20, 1, 5, 0); // Poppy
+            generateChunkBiomeBlocks(chunk, 0.96f, 21, 1, 6, 0); // Dandelion
+            generateChunkBiomeBlocks(chunk, 0.93f, 52, 1, 7, 0); // Maple Leaves Carpet
+            generateChunkBiomeFeatures(chunk, 0.99f, 2, 2, "greenMaple", 1, 8, 0);
             break;
     }
 }
 
-void generateChunkBiomeFeatures(Chunk& chunk, int margin, float treshold, int xOffset, int zOffset, std::string structureName, int allowedBlockID) {
-    ChunkNoises noises = noiseInit();
-    const Structure* structure = StructureDB::get(structureName);
-    if (!structure) return;
+StructureLayer rotateLayer(const StructureLayer& layer, int rot) {
+    int h = static_cast<int>(layer.size());
+    int w = static_cast<int>(layer[0].size());
+    StructureLayer out;
 
-    for (int x = margin; x < Chunk::WIDTH - margin; ++x) {
-        for (int z = margin; z < Chunk::DEPTH - margin; ++z) {
-            float fx = static_cast<float>(chunk.chunkX * Chunk::WIDTH + x);
-            float fz = static_cast<float>(chunk.chunkZ * Chunk::DEPTH + z);
-            float n = noises.featureNoise.GetNoise(fx, fz);
-            if (n > treshold) { // Chance of feature spawning
-                int y = Chunk::HEIGHT - 2;
-                while (y > 0 && chunk.blocks[x][y][z].type == 0) --y; {
+    switch (rot) {
+        case 0: // 0deg
+            return layer;
+
+        case 1: // 90°
+            out.assign(w, std::vector<uint16_t>(h));
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    out[x][h - 1 - y] = layer[y][x];
+            return out;
+
+        case 2: // 180deg
+            out.assign(h, std::vector<uint16_t>(w));
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    out[h - 1 - y][w - 1 - x] = layer[y][x];
+            return out;
+
+        case 3: // 270deg
+            out.assign(w, std::vector<uint16_t>(h));
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    out[w - 1 - x][y] = layer[y][x];
+            return out;
+    }
+    return layer;
+}
+
+Structure rotateStructure(const Structure& in, int rot) {
+    Structure out = in;
+    out.layers.clear();
+    out.layers.reserve(in.layers.size());
+
+    for (const StructureLayer& layer : in.layers) {
+        out.layers.push_back(rotateLayer(layer, rot));
+    }
+    return out;
+}
+
+void generateChunkBiomeFeatures(Chunk& chunk, float treshold, int xOffset, int zOffset, std::string structureName, int allowedBlockID, int seedOffset, int yOffset) {
+    ChunkNoises noises = noiseInit(seedOffset);
+    const Structure* original = StructureDB::get(structureName);
+    if (!original) return;
+
+    float centerX = float(chunk.chunkX * Chunk::chunkWidth + 8);
+    float centerZ = float(chunk.chunkZ * Chunk::chunkDepth + 8);
+
+    float r = noises.randomNoise.GetNoise(centerX, centerZ);
+    int rot = static_cast<int>((r + 1.0f) * 0.5f * 4.0f) % 4;
+    Structure rotated = rotateStructure(*original, rot);
+
+    for (int x = 0; x < Chunk::chunkWidth; x++) {
+        for (int z = 0; z < Chunk::chunkDepth; z++) {
+            float worldX = float(chunk.chunkX * Chunk::chunkWidth + x);
+            float worldZ = float(chunk.chunkZ * Chunk::chunkDepth + z);
+            float n = noises.featureNoise.GetNoise(worldX, worldZ);
+            if (n > treshold) {
+                int y = Chunk::chunkHeight - 2;
+                while (y > 0 && chunk.blocks[x][y][z].type == 0) y--;
+
+                if (chunk.blocks[x][y][z].type == allowedBlockID) {
+                    chunk.placeStructure(rotated, x - xOffset, (y + 1) + yOffset, z - zOffset);
+                }
+            }
+        }
+    }
+}
+
+void generateChunkBiomeBlocks(Chunk& chunk, float treshold, int blockID, int allowedBlockID, int seedOffset, int yOffset) {
+    ChunkNoises noises = noiseInit(seedOffset);
+
+    for (int x = 0; x < Chunk::chunkWidth; x++) {
+        for (int z = 0; z < Chunk::chunkDepth; z++) {
+            float worldX = static_cast<float>(chunk.chunkX * Chunk::chunkWidth + x);
+            float worldZ = static_cast<float>(chunk.chunkZ * Chunk::chunkDepth + z);
+            float n = noises.featureNoise.GetNoise(worldX, worldZ);
+            if (n > treshold) {
+                int y = Chunk::chunkHeight - 2;
+                while (y > 0 && chunk.blocks[x][y][z].type == 0) y--; {
                     if (chunk.blocks[x][y][z].type == allowedBlockID) {
-                        chunk.placeStructure(*structure, x - xOffset, y + 1, z - zOffset);
+                        int ty = (y + 1) + yOffset;
+
+                        if (x >= 0 && x < Chunk::chunkWidth && z >= 0 && z < Chunk::chunkDepth && ty >= 0 && ty < Chunk::chunkHeight) {
+                            chunk.blocks[x][ty][z].type = static_cast<uint8_t>(blockID);
+                        }
                     }
                 }
             }

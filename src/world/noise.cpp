@@ -1,7 +1,8 @@
 #include "noise.hpp"
 #include "../core/options.hpp"
 
-ChunkNoises noiseInit() {
+// seedOffset is used to create different noise for features
+ChunkNoises noiseInit(int seedOffset) {
     ChunkNoises noises;
 
     int seed = getOptionInt("world_seed", 1234);
@@ -20,17 +21,21 @@ ChunkNoises noiseInit() {
     noises.baseNoise.SetFrequency(0.005f);
     noises.baseNoise.SetSeed(seed);
 
-    noises.detailNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+    noises.detailNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
     noises.detailNoise.SetFrequency(0.02f);
     noises.detailNoise.SetSeed(seed + 1);
 
-    noises.detail2Noise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+    noises.detail2Noise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
     noises.detail2Noise.SetFrequency(0.05f);
     noises.detail2Noise.SetSeed(seed + 2);
 
     noises.featureNoise.SetNoiseType(FastNoiseLite::NoiseType_Value);
     noises.featureNoise.SetFrequency(500.0f);
-    noises.featureNoise.SetSeed(seed + 3);
+    noises.featureNoise.SetSeed(seed + 3 + seedOffset);
+
+    noises.randomNoise.SetNoiseType(FastNoiseLite::NoiseType_Value);
+    noises.randomNoise.SetFrequency(500.0f);
+    noises.randomNoise.SetSeed(seed + 4);
 
     return noises;
 }

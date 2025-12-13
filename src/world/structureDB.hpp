@@ -5,7 +5,7 @@
 #include <string>
 #include <unordered_map>
 
-using StructureLayer = std::vector<std::vector<uint8_t>>;
+using StructureLayer = std::vector<std::vector<uint16_t>>;
 
 class Structure {
 public:
@@ -19,7 +19,6 @@ public:
 
 class StructureDB {
 public:
-    static void initialize();
     static const Structure* get(const std::string& name);
 
 private:

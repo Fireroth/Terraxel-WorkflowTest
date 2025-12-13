@@ -5,13 +5,17 @@
 
 class Renderer {
 public:
-    GLint uModelLoc, uViewLoc, uProjLoc, uAtlasLoc, uAspectLoc, uFogDensityLoc, uFogStartLoc, uFogColorLoc;
+    GLint uModelLoc, uViewLoc, uProjLoc, uAtlasLoc, uCrosshairAspectLoc, uFogDensityLoc, uFogStartLoc, uFogColorLoc, uCamPosLoc;
+    GLint uCrossModelLoc, uCrossViewLoc, uCrossProjLoc, uCrossAtlasLoc;
+    GLint uLiquidModelLoc, uLiquidViewLoc, uLiquidProjLoc, uLiquidAtlasLoc;
+    GLint uLiquidTimeLoc, uCrossTimeLoc, uTimeLoc;
+    GLint uLiquidFogDensityLoc, uLiquidFogStartLoc, uLiquidFogColorLoc, uLiquidCamPosLoc;
+    GLint uCrossFogDensityLoc, uCrossFogStartLoc, uCrossFogColorLoc, uCrossCamPosLoc;
     Renderer();
     ~Renderer();
 
     void init();
-    void cleanup();
-    void renderWorld(const class Camera& camera, float aspectRatio, float deltaTime);
+    void renderWorld(const class Camera& camera, float aspectRatio, float deltaTime, float currentFrame);
     void renderCrosshair(float aspectRatio);
 
     World world;
@@ -20,11 +24,13 @@ public:
     float fogDensity;
     float fogStartDistance;
     glm::vec3 fogColor;
+    GLuint textureAtlas;
 
 private:
-    GLuint shaderProgram, textureAtlas;
+    GLuint shaderProgram;
+    GLuint crossShaderProgram;
+    GLuint liquidShaderProgram;
     GLuint crosshairVAO, crosshairVBO, crosshairShaderProgram;
-    World* currentWorld = nullptr;
     GLuint createShader(const char* source, GLenum shaderType);
     GLuint createShaderProgram(const char* vertexSource, const char* fragmentSource);
     void loadTextureAtlas(const std::string& path);

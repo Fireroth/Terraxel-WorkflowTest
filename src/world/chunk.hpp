@@ -12,30 +12,35 @@ class World;
 
 class Chunk {
 public:
-    static const int WIDTH = 16;
-    static const int HEIGHT = 256;
-    static const int DEPTH = 16;
+    static const int chunkWidth = 16;
+    static const int chunkHeight = 256;
+    static const int chunkDepth = 16;
 
     ChunkNoises noises;
 
     enum class Biome {
         Plains,
         Desert,
-        Forest
+        Forest,
+        FirForest,
+        FlowerField,
+        MapleForest
     };
 
     struct Block {
         uint8_t type;
     };
 
-    Chunk(int x, int z, World* worldRef);
+    Chunk(int x, int z, World* worldPtr);
     ~Chunk();
 
     void buildMesh();
     void render(const Camera& camera, GLint uModelLoc);
+    void renderCross(const Camera& camera, GLint uModelLoc);
+    void renderLiquid(const Camera& camera, GLint uLiquidModelLoc);
     void placeStructure(const Structure& structure, int baseX, int baseY, int baseZ);
 
-    Block blocks[WIDTH][HEIGHT][DEPTH];
+    Block blocks[chunkWidth][chunkHeight][chunkDepth];
     int chunkX, chunkZ;
     Biome biome;
 
@@ -43,14 +48,17 @@ private:
     World* world;
 
     GLuint VAO, VBO, EBO;
+    GLuint crossVAO, crossVBO, crossEBO;
+    GLuint liquidVAO, liquidVBO, liquidEBO;
     GLsizei indexCount;
+    GLsizei crossIndexCount;
+    GLsizei liquidIndexCount;
+
+    std::vector<float> liquidVertexDataCPU;
+    std::vector<unsigned int> liquidIndexDataCPU;
 
     void addFace(std::vector<float>& vertices, std::vector<unsigned int>& indices,
                  int x, int y, int z, int face, const BlockDB::BlockInfo* blockInfo, unsigned int& indexOffset);
 
     bool isBlockVisible(int x, int y, int z, int face) const;
-
-    void generateBiomeFeatures(int margin, float treshold, int xOffset, int zOffset, std::string structureName, int allowedBlockID);
-
-    friend class World; // Allow World to access private members (yay, a friend)
 };

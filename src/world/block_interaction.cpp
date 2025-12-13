@@ -2,6 +2,8 @@
 #include "chunk.hpp"
 #include "../core/camera.hpp"
 #include "world.hpp"
+#include "blockDB.hpp"
+#include "modelDB.hpp"
 
 struct RaycastResult {
     bool hit = false;
@@ -15,82 +17,157 @@ struct RaycastResult {
     glm::ivec3 faceNormal = glm::ivec3(0);
 };
 
-// DDA raycast
-RaycastResult raycast(World* world, const glm::vec3& origin, const glm::vec3& dir, float maxDistance)
-{
-    RaycastResult result;
 
-    glm::ivec3 blockPos = glm::floor(origin);
-    glm::vec3 deltaDist = glm::abs(1.0f / dir);
-    glm::ivec3 step = glm::sign(dir);
-    glm::vec3 sideDist;
+// Helper function to get Hitbox for a block model
+bool getModelHitBoxes(uint8_t blockId, std::vector<std::pair<glm::vec3, glm::vec3>>& outBoxes) {
+    const BlockDB::BlockInfo* info = BlockDB::getBlockInfo(blockId);
+    if (!info) return false;
 
-    for (int i = 0; i < 3; ++i) {
-        float nextBorder = (step[i] > 0) ? (blockPos[i] + 1.0f) : blockPos[i];
-        sideDist[i] = glm::abs(origin[i] - nextBorder) * deltaDist[i];
+    if (!ModelDB::getHitBoxes(info->modelName, outBoxes) || outBoxes.empty()) {
+        outBoxes.clear();
+        outBoxes.emplace_back(glm::vec3(0.0f), glm::vec3(1.0f));
+    }
+    return true;
+}
+
+// Ray-AABB intersection helper
+bool rayAABBIntersect( const glm::vec3& rayOrigin, const glm::vec3& rayDir, const glm::vec3& boxMin, const glm::vec3& boxMax, float& hitDist, float maxRayDist) {
+    float nearestEntry = 0.0f;
+    float farthestExit = maxRayDist;
+    for (int axis = 0; axis < 3; axis++) {
+        float inverseDir = 1.0f / rayDir[axis];
+        float entryDist = (boxMin[axis] - rayOrigin[axis]) * inverseDir;
+        float exitDist  = (boxMax[axis] - rayOrigin[axis]) * inverseDir;
+        if (entryDist > exitDist) std::swap(entryDist, exitDist);
+        nearestEntry = std::max(nearestEntry, entryDist);
+        farthestExit = std::min(farthestExit, exitDist);
+        if (farthestExit < nearestEntry) return false;
     }
 
-    float distanceTraveled = 0.0f;
-    glm::ivec3 lastBlockPos = blockPos;
-    Chunk* lastChunk = nullptr;
+    hitDist = nearestEntry;
+    return nearestEntry <= maxRayDist && farthestExit >= 0.0f;
+}
 
-    while (distanceTraveled < maxDistance) {
-        int cx = blockPos.x >> 4;
-        int cz = blockPos.z >> 4;
-        Chunk* chunk = world->getChunk(cx, cz);
+// Helper function that returns the face normal of the AABB that was hit
+glm::ivec3 getAABBHitNormal(const glm::vec3& hitPoint, const glm::vec3& boxMin, const glm::vec3& boxMax) {
+    const float helper = 0.0001f;
+    if (fabs(hitPoint.x - boxMin.x) < helper) return glm::ivec3(-1, 0, 0);
+    if (fabs(hitPoint.x - boxMax.x) < helper) return glm::ivec3(1, 0, 0);
+    if (fabs(hitPoint.y - boxMin.y) < helper) return glm::ivec3(0, -1, 0);
+    if (fabs(hitPoint.y - boxMax.y) < helper) return glm::ivec3(0, 1, 0);
+    if (fabs(hitPoint.z - boxMin.z) < helper) return glm::ivec3(0, 0, -1);
+    if (fabs(hitPoint.z - boxMax.z) < helper) return glm::ivec3(0, 0, 1);
+    return glm::ivec3(0, 0, 0); // fallback
+}
 
+// Helper function for correct chunk coordinate calculation
+int worldToChunkCoord(int x, int chunkSize) {
+    return (x >= 0) ? (x / chunkSize) : ((x - chunkSize + 1) / chunkSize);
+}
+
+RaycastResult raycast(World* world, const glm::vec3& origin, const glm::vec3& dir, float maxDist) {
+    RaycastResult result;
+
+    glm::vec3 rayPos = origin;
+    glm::ivec3 blockPos = glm::floor(rayPos);
+
+    glm::vec3 deltaDist = glm::abs(glm::vec3(1.0f) / dir);
+    glm::ivec3 step = glm::sign(dir);
+
+    glm::vec3 sideDist;
+    for (int i = 0; i < 3; i++) {
+        float offset = (step[i] > 0 ? (blockPos[i] + 1.0f - rayPos[i]) : (rayPos[i] - blockPos[i]));
+        sideDist[i] = offset * deltaDist[i];
+    }
+
+    float traveledDist = 0.0f;
+    for (int i = 0; i < 128 && traveledDist <= maxDist; i++) {
+        int chunkX = worldToChunkCoord(blockPos.x, Chunk::chunkWidth);
+        int chunkZ = worldToChunkCoord(blockPos.z, Chunk::chunkDepth);
+        Chunk* chunk = world->getChunk(chunkX, chunkZ);
         if (chunk) {
-            int lx = blockPos.x - cx * Chunk::WIDTH;
-            int ly = blockPos.y;
-            int lz = blockPos.z - cz * Chunk::DEPTH;
+            int localX = blockPos.x - chunkX * Chunk::chunkWidth;
+            int localY = blockPos.y;
+            int localZ = blockPos.z - chunkZ * Chunk::chunkDepth;
+            if (localX >= 0 && localX < Chunk::chunkWidth &&
+                localY >= 0 && localY < Chunk::chunkHeight &&
+                localZ >= 0 && localZ < Chunk::chunkDepth) {
+                uint8_t type = chunk->blocks[localX][localY][localZ].type;
+                if (type != 0) {
+                    std::vector<std::pair<glm::vec3, glm::vec3>> boxes;
+                    getModelHitBoxes(type, boxes);
 
-            if (lx >= 0 && lx < Chunk::WIDTH &&
-                ly >= 0 && ly < Chunk::HEIGHT &&
-                lz >= 0 && lz < Chunk::DEPTH &&
-                chunk->blocks[lx][ly][lz].type != 0)
-            {
-                result.hit = true;
-                result.hitBlockPos = { lx, ly, lz };
-                result.hitChunk = chunk;
-                result.faceNormal = blockPos - lastBlockPos;
+                    float bestT = std::numeric_limits<float>::infinity();
+                    glm::ivec3 nearestNormal(0);
+                    bool found = false;
 
-                if (lastChunk) {
-                    result.hasPlacePos = true;
-                    result.placeBlockPos = {
-                        lastBlockPos.x - lastChunk->chunkX * Chunk::WIDTH,
-                        lastBlockPos.y,
-                        lastBlockPos.z - lastChunk->chunkZ * Chunk::DEPTH
-                    };
-                    result.placeChunk = lastChunk;
+                    for (const auto& p : boxes) {
+                        glm::vec3 boxMin = glm::vec3(blockPos) + p.first;
+                        glm::vec3 boxMax = glm::vec3(blockPos) + p.second;
+                        float hitT;
+                        if (rayAABBIntersect(origin, dir, boxMin, boxMax, hitT, maxDist)) {
+                            if (hitT >= 0.0f && hitT < bestT) {
+                                bestT = hitT;
+                                nearestNormal = getAABBHitNormal(origin + dir * hitT, boxMin, boxMax);
+                                found = true;
+                            }
+                        }
+                    }
+
+                    if (found) {
+                        result.hit = true;
+                        result.hitChunk = chunk;
+                        result.hitBlockPos = glm::ivec3(localX, localY, localZ);
+                        result.faceNormal = nearestNormal;
+
+                        glm::ivec3 placeWorldPos = blockPos + result.faceNormal;
+                        int placeChunkX = worldToChunkCoord(placeWorldPos.x, Chunk::chunkWidth);
+                        int placeChunkZ = worldToChunkCoord(placeWorldPos.z, Chunk::chunkDepth);
+                        Chunk* placeChunk = world->getChunk(placeChunkX, placeChunkZ);
+                        if (placeChunk) {
+                            int placeLocalX = placeWorldPos.x - placeChunkX * Chunk::chunkWidth;
+                            int placeLocalY = placeWorldPos.y;
+                            int placeLocalZ = placeWorldPos.z - placeChunkZ * Chunk::chunkDepth;
+                            if (placeLocalX >= 0 && placeLocalX < Chunk::chunkWidth &&
+                                placeLocalY >= 0 && placeLocalY < Chunk::chunkHeight &&
+                                placeLocalZ >= 0 && placeLocalZ < Chunk::chunkDepth) {
+                                result.hasPlacePos = true;
+                                result.placeBlockPos = glm::ivec3(placeLocalX, placeLocalY, placeLocalZ);
+                                result.placeChunk = placeChunk;
+                            }
+                        }
+
+                        return result;
+                    }
                 }
-
-                return result;
             }
         }
 
-        lastBlockPos = blockPos;
-        lastChunk = chunk;
-
-        int axis = (sideDist.x < sideDist.y) ? 
-                   ((sideDist.x < sideDist.z) ? 0 : 2) : 
-                   ((sideDist.y < sideDist.z) ? 1 : 2);
-
-        sideDist[axis] += deltaDist[axis];
-        blockPos[axis] += step[axis];
-        distanceTraveled = sideDist[axis] - deltaDist[axis];
+        // Step to next voxel
+        if (sideDist.x < sideDist.y && sideDist.x < sideDist.z) {
+            blockPos.x += step.x;
+            traveledDist = sideDist.x;
+            sideDist.x += deltaDist.x;
+        } else if (sideDist.y < sideDist.z) {
+            blockPos.y += step.y;
+            traveledDist = sideDist.y;
+            sideDist.y += deltaDist.y;
+        } else {
+            blockPos.z += step.z;
+            traveledDist = sideDist.z;
+            sideDist.z += deltaDist.z;
+        }
     }
-
     return result;
 }
 
-void placeBreakBlockOnClick(World* world, const Camera& camera, char action, uint8_t blockType)
-{
+void placeBreakBlockOnClick(World* world, const Camera& camera, char action, uint8_t blockType) {
     glm::vec3 origin = camera.getPosition();
     glm::vec3 dir = camera.getFront();
 
     RaycastResult hit = raycast(world, origin, dir, 6.0f);
 
-    int cx = 0, cz = 0, x = 0, z = 0;
+    int chunkX = 0, chunkZ = 0, x = 0, z = 0;
 
     // p = place, b = break
     if (action == 'b') {
@@ -98,44 +175,70 @@ void placeBreakBlockOnClick(World* world, const Camera& camera, char action, uin
         hit.hitChunk->blocks[hit.hitBlockPos.x][hit.hitBlockPos.y][hit.hitBlockPos.z].type = 0;
         hit.hitChunk->buildMesh();
 
-        // Assign values for neighbor chunk checks
-        cx = hit.hitChunk->chunkX;
-        cz = hit.hitChunk->chunkZ;
+        chunkX = hit.hitChunk->chunkX;
+        chunkZ = hit.hitChunk->chunkZ;
         x = hit.hitBlockPos.x;
         z = hit.hitBlockPos.z;
     }
     else if (action == 'p') {
         if (!hit.hasPlacePos || !hit.placeChunk) return;
         // Prevent placement below bedrock or above chunk height
-        if (hit.placeBlockPos.y < 0 || hit.placeBlockPos.y >= Chunk::HEIGHT) return;
+        if (hit.placeBlockPos.y < 0 || hit.placeBlockPos.y >= Chunk::chunkHeight) return;
         auto& block = hit.placeChunk->blocks[hit.placeBlockPos.x][hit.placeBlockPos.y][hit.placeBlockPos.z];
         if (block.type != 0) return;
+
+        // Prevent placing inside player
+        std::vector<std::pair<glm::vec3, glm::vec3>> boxes;
+        getModelHitBoxes(blockType, boxes);
+
+        glm::vec3 playerPos = camera.getPosition();
+        float playerRadius = camera.getPlayerRadius();
+        float playerHeight = camera.getPlayerHeight();
+        float eyeHeight = camera.getEyeHeight();
+        glm::vec3 playerAABBMin = glm::vec3(playerPos.x - playerRadius, playerPos.y - eyeHeight, playerPos.z - playerRadius);
+        glm::vec3 playerAABBMax = glm::vec3(playerPos.x + playerRadius, playerPos.y - eyeHeight + playerHeight, playerPos.z + playerRadius);
+        for (const auto& p : boxes) {
+            glm::vec3 blockWorldMin = glm::vec3(
+                hit.placeChunk->chunkX * Chunk::chunkWidth + hit.placeBlockPos.x,
+                hit.placeBlockPos.y,
+                hit.placeChunk->chunkZ * Chunk::chunkDepth + hit.placeBlockPos.z
+            ) + p.first;
+            glm::vec3 blockWorldMax = glm::vec3(
+                hit.placeChunk->chunkX * Chunk::chunkWidth + hit.placeBlockPos.x,
+                hit.placeBlockPos.y,
+                hit.placeChunk->chunkZ * Chunk::chunkDepth + hit.placeBlockPos.z
+            ) + p.second;
+
+            bool overlap = (blockWorldMin.x < playerAABBMax.x && blockWorldMax.x > playerAABBMin.x) &&
+                           (blockWorldMin.y < playerAABBMax.y && blockWorldMax.y > playerAABBMin.y) &&
+                           (blockWorldMin.z < playerAABBMax.z && blockWorldMax.z > playerAABBMin.z);
+            if (overlap) return;
+        }
 
         block.type = blockType;
         hit.placeChunk->buildMesh();
 
-        // Assign values for neighbor chunk checks
-        cx = hit.placeChunk->chunkX;
-        cz = hit.placeChunk->chunkZ;
+        chunkX = hit.placeChunk->chunkX;
+        chunkZ = hit.placeChunk->chunkZ;
         x = hit.placeBlockPos.x;
         z = hit.placeBlockPos.z;
     }
 
     // Rebuild neighbor chunk mesh if at chunk edge
     if (x == 0) {
-        Chunk* neighbor = world->getChunk(cx - 1, cz);
+        Chunk* neighbor = world->getChunk(chunkX - 1, chunkZ);
         if (neighbor) neighbor->buildMesh();
     }
-    if (x == Chunk::WIDTH - 1) {
-        Chunk* neighbor = world->getChunk(cx + 1, cz);
+    if (x == Chunk::chunkWidth - 1) {
+        Chunk* neighbor = world->getChunk(chunkX + 1, chunkZ);
         if (neighbor) neighbor->buildMesh();
     }
     if (z == 0) {
-        Chunk* neighbor = world->getChunk(cx, cz - 1);
+        Chunk* neighbor = world->getChunk(chunkX, chunkZ - 1);
         if (neighbor) neighbor->buildMesh();
     }
-    if (z == Chunk::DEPTH - 1) {
-        Chunk* neighbor = world->getChunk(cx, cz + 1);
+    if (z == Chunk::chunkDepth - 1) {
+        Chunk* neighbor = world->getChunk(chunkX, chunkZ + 1);
         if (neighbor) neighbor->buildMesh();
     }
 }
@@ -147,8 +250,7 @@ struct BlockInfo {
     uint8_t type;
 };
 
-BlockInfo getLookedAtBlockInfo(World* world, const Camera& camera)
-{
+BlockInfo getLookedAtBlockInfo(World* world, const Camera& camera) {
     glm::vec3 origin = camera.getPosition();
     glm::vec3 dir = camera.getFront();
 
@@ -158,9 +260,9 @@ BlockInfo getLookedAtBlockInfo(World* world, const Camera& camera)
     BlockInfo info;
     info.valid = true;
     info.worldPos = glm::ivec3(
-        hit.hitChunk->chunkX * Chunk::WIDTH + hit.hitBlockPos.x,
+        hit.hitChunk->chunkX * Chunk::chunkWidth + hit.hitBlockPos.x,
         hit.hitBlockPos.y,
-        hit.hitChunk->chunkZ * Chunk::DEPTH + hit.hitBlockPos.z
+        hit.hitChunk->chunkZ * Chunk::chunkDepth + hit.hitBlockPos.z
     );
     info.type = hit.hitChunk->blocks[hit.hitBlockPos.x][hit.hitBlockPos.y][hit.hitBlockPos.z].type;
 
